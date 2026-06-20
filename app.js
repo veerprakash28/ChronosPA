@@ -750,135 +750,122 @@ function handleAssistantCommand(e) {
 
 function parseCommand(cmd) {
   const todayStr = getLocalDateString(new Date());
+  let taskTitle = "";
+  let timeStr = "";
+  let isRelative = false;
+  let delayMinutes = 0;
   
-  // 1. Match: "remind me to [task] in [X] mins/minutes/hours"
-  const relativeMatch = cmd.match(/(?:remind me to|add task|todo)\s+(.+?)\s+(?:in|after)\s+(\d+)\s*(min|mins|minute|minutes|hour|hours)/i);
+  // Clean command text
+  let text = cmd.trim();
+  
+  // 1. Check for Relative Time: "in 10 mins", "after 1 hour", etc.
+  const relativeRegex = /\b(?:in|after)\s+(\d+)\s*(min|mins|minute|minutes|hour|hours|hr|hrs)\b/i;
+  const relativeMatch = text.match(relativeRegex);
   
   if (relativeMatch) {
-    const taskTitle = relativeMatch[1].trim();
-    const quantity = parseInt(relativeMatch[2]);
-    const unit = relativeMatch[3].toLowerCase();
+    isRelative = true;
+    const quantity = parseInt(relativeMatch[1]);
+    const unit = relativeMatch[2].toLowerCase();
     
-    let multiplier = 60 * 1000; // default mins
-    if (unit.startsWith("hour")) {
-      multiplier = 60 * 60 * 1000;
+    let multiplier = 1; // minutes
+    if (unit.startsWith("hour") || unit.startsWith("hr")) {
+      multiplier = 60;
     }
+    delayMinutes = quantity * multiplier;
     
-    const targetTime = new Date(Date.now() + quantity * multiplier);
-    const targetTimeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
+    // Calculate target time
+    const targetTime = new Date(Date.now() + delayMinutes * 60 * 1000);
+    timeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
     
-    const newTask = {
-      id: "task-" + Date.now(),
-      title: taskTitle,
-      date: todayStr,
-      time: targetTimeStr,
-      priority: "medium",
-      status: "pending",
-      notified: false
-    };
-
-    AppState.tasks.push(newTask);
-    saveState();
+    // Remove the time phrase from text
+    text = text.replace(relativeRegex, "").trim();
+  }
+  // 2. Check for Absolute Time: "at 3am", "at 15:30", "for 3 am", "3:00 am", "at 3"
+  else {
+    // Regex matches:
+    // - Prepositions: at, for, by, on (optional)
+    // - Hour: 1 or 2 digits
+    // - Minutes: :XX (optional)
+    // - AM/PM: am, pm (optional)
+    const absoluteRegex = /\b(?:at|for|by)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b$/i;
+    const absoluteMatch = text.match(absoluteRegex);
     
-    renderTimeline();
-    renderCalendar();
-    renderSelectedDayPreview();
-    updateMetrics();
-    
-    addAssistantMessage(`✍️ Understood! I have set a reminder for **"${taskTitle}"** today in ${quantity} ${unit} (at ${targetTimeStr}).`);
-    return;
+    if (absoluteMatch) {
+      let hour = parseInt(absoluteMatch[1]);
+      const minute = absoluteMatch[2] || "00";
+      const ampm = absoluteMatch[3] ? absoluteMatch[3].toLowerCase() : null;
+      
+      if (ampm === "pm" && hour < 12) hour += 12;
+      if (ampm === "am" && hour === 12) hour = 0;
+      
+      timeStr = `${String(hour).padStart(2, '0')}:${minute}`;
+      
+      // Remove time phrase from text
+      text = text.replace(absoluteRegex, "").trim();
+    }
   }
 
-  // 2. Match: "remind me to [task] at [HH:MM] (AM/PM)" or "add task [task] for [HH](:MM) (AM/PM)"
-  const absoluteMatch = cmd.match(/(?:remind me to|add task|todo|add)\s+(.+?)\s+(?:at|for|by)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  // If we couldn't parse any time, default to 1 hour from now
+  if (!timeStr) {
+    const targetTime = new Date(Date.now() + 60 * 60 * 1000);
+    timeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
+    isRelative = true;
+    delayMinutes = 60;
+  }
+
+  // Clean remaining text to find the title
+  // Strip common command prefixes
+  const prefixes = [
+    /^(?:remind me to|remind me|remind|add task|add|todo|schedule|alert)\s+/i,
+    /^(?:to|for|at|in)\s+/i
+  ];
   
-  if (absoluteMatch) {
-    const taskTitle = absoluteMatch[1].trim();
-    let hour = parseInt(absoluteMatch[2]);
-    const minute = absoluteMatch[3] || "00";
-    const ampm = absoluteMatch[4] ? absoluteMatch[4].toLowerCase() : null;
-
-    if (ampm === "pm" && hour < 12) hour += 12;
-    if (ampm === "am" && hour === 12) hour = 0;
-
-    const formattedHour = String(hour).padStart(2, '0');
-    const timeStr = `${formattedHour}:${minute}`;
-
-    const newTask = {
-      id: "task-" + Date.now(),
-      title: taskTitle,
-      date: todayStr,
-      time: timeStr,
-      priority: "medium",
-      status: "pending",
-      notified: false
-    };
-
-    AppState.tasks.push(newTask);
-    saveState();
-
-    renderTimeline();
-    renderCalendar();
-    renderSelectedDayPreview();
-    updateMetrics();
-
-    addAssistantMessage(`📅 Scheduled: **"${taskTitle}"** today at ${timeStr}. I will chime when it's time.`);
-    return;
-  }
-
-  // 3. Match: "carry forward" or "reschedule yesterday"
-  if (cmd.toLowerCase().includes("carry forward") || cmd.toLowerCase().includes("reschedule")) {
-    const todayStr = getLocalDateString(new Date());
-    const overdueTasks = AppState.tasks.filter(t => t.date < todayStr && t.status !== "completed" && t.status !== "carried");
-    
-    if (overdueTasks.length > 0) {
-      carryAllForwardToToday();
-    } else {
-      addAssistantMessage("🔍 I checked, and you have no overdue tasks to carry forward from previous days.");
+  let cleaned = text;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const regex of prefixes) {
+      const replaced = cleaned.replace(regex, "");
+      if (replaced !== cleaned) {
+        cleaned = replaced.trim();
+        changed = true;
+      }
     }
-    return;
   }
 
-  // 4. Match general add request: "add [task]" or "todo [task]"
-  const simpleMatch = cmd.match(/^(?:add|todo)\s+(.+)/i);
-  if (simpleMatch) {
-    const taskTitle = simpleMatch[1].trim();
-    // Default to today in 1 hour
-    const fut = new Date(Date.now() + 60 * 60 * 1000);
-    const timeStr = `${String(fut.getHours()).padStart(2, '0')}:${String(fut.getMinutes()).padStart(2, '0')}`;
-    
-    const newTask = {
-      id: "task-" + Date.now(),
-      title: taskTitle,
-      date: todayStr,
-      time: timeStr,
-      priority: "medium",
-      status: "pending",
-      notified: false
-    };
+  // Strip trailing/leading preposition fragments
+  cleaned = cleaned.replace(/^(?:to|for|at|in|by)\s+/i, "").trim();
+  cleaned = cleaned.replace(/\s+(?:to|for|at|in|by)$/i, "").trim();
 
-    AppState.tasks.push(newTask);
-    saveState();
+  // Fallback to "Reminder" if title is empty
+  taskTitle = cleaned || "Reminder";
 
-    renderTimeline();
-    renderCalendar();
-    renderSelectedDayPreview();
-    updateMetrics();
+  // Create the task
+  const newTask = {
+    id: "task-" + Date.now(),
+    title: taskTitle,
+    date: todayStr,
+    time: timeStr,
+    priority: "medium",
+    status: "pending",
+    notified: false
+  };
 
-    addAssistantMessage(`📝 Added task: **"${taskTitle}"** at ${timeStr} today.`);
-    return;
+  AppState.tasks.push(newTask);
+  saveState();
+
+  renderTimeline();
+  renderCalendar();
+  renderSelectedDayPreview();
+  updateMetrics();
+  checkOverduePreviousDays();
+
+  // Print friendly confirmation message
+  if (isRelative) {
+    addAssistantMessage(`✍️ Understood! I have set a reminder for **"${taskTitle}"** today in ${delayMinutes} minutes (at ${timeStr}).`);
+  } else {
+    addAssistantMessage(`📅 Scheduled: **"${taskTitle}"** today at ${timeStr}. I will chime when it's time.`);
   }
-
-  // 5. Fallback conversational interface helper
-  addAssistantMessage(`🤖 Sorry, I didn't quite capture that command structure. Try these examples:
-    <ul>
-      <li><code>remind me to exercise in 15 mins</code></li>
-      <li><code>add task review code at 14:00</code></li>
-      <li><code>remind me to check email at 5:30 pm</code></li>
-      <li><code>carry forward yesterday's tasks</code></li>
-    </ul>
-    You can also manually click the '+' icon next to 'Today's Focus' to fill details in our forms!
-  `);
 }
 
 // --- Event Listeners and Button Bindings ---
