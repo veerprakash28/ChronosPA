@@ -80,18 +80,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   initEventListeners();
   requestNotificationPermission(true); // check status silently
 
+  // Always load the local state (tasks, preferences, chat logs) on startup
+  loadState();
+  renderChatHistory();
+
   const configLoaded = await loadFirebaseConfig();
   firebaseActive = configLoaded && initFirebase();
 
   if (!firebaseActive) {
     // No Firebase config — silently skip sign-in and go straight to the app
     document.getElementById("auth-overlay").classList.add("hidden");
-    loadState();
     checkOverduePreviousDays();
-    renderTimeline();
-    renderCalendar();
-    renderSelectedDayPreview();
-    updateMetrics();
+    refreshAllViews();
   } else {
     // Firebase is active — set up auth and real-time sync
     initFirebaseAuth();
@@ -113,11 +113,13 @@ function loadState() {
       const parsed = JSON.parse(saved);
       AppState.tasks = (parsed.tasks || []).filter(t => !t.id.startsWith("demo-"));
       AppState.preferences = parsed.preferences || AppState.preferences;
+      AppState.chatHistory = parsed.chatHistory || [];
     } catch (e) {
       console.error("Error loading localStorage state:", e);
     }
   } else {
     AppState.tasks = [];
+    AppState.chatHistory = [];
     saveState();
   }
 }
@@ -261,16 +263,15 @@ function initFirebaseAuth() {
       addAssistantMessage(`🔒 Synced! Welcome back, **${displayName}**.`);
     } else {
       currentUser = null;
-      AppState.tasks = [];
 
       // Reset UI
       nameLabel.textContent = "Sign In";
       dropName.textContent = "Guest User";
       dropEmail.textContent = "Please sign in to sync";
 
-      // Reset user state
+      // Reset user state to local guest mode
       AppState.preferences.username = "User";
-      saveState();
+      loadState(); // Restore local guest tasks and chat logs
 
       // Show sign in, hide sign out
       if (signInBtn) signInBtn.classList.remove("hidden");
@@ -285,11 +286,8 @@ function initFirebaseAuth() {
       // Show login overlay
       authOverlay.classList.remove("hidden");
 
-      // Render empty state
-      renderTimeline();
-      renderCalendar();
-      renderSelectedDayPreview();
-      updateMetrics();
+      // Render local state
+      refreshAllViews();
     }
   });
 }
@@ -1073,28 +1071,74 @@ function formatMarkdown(text) {
 }
 
 // --- Personal Assistant Interaction (Chat Console) ---
-function addAssistantMessage(text, className = "") {
+function renderChatHistory() {
   const log = document.getElementById("pa-chat-log");
-  const msg = document.createElement("div");
-  msg.className = `chat-message assistant-message ${className}`;
-  msg.innerHTML = `
-    <div class="message-content">${formatMarkdown(text)}</div>
-    <div class="message-meta">Just now</div>
-  `;
-  log.appendChild(msg);
+  if (!log) return;
+  log.innerHTML = "";
+
+  if (!AppState.chatHistory || AppState.chatHistory.length === 0) {
+    AppState.chatHistory = [
+      { sender: "assistant", text: "Hello! I'm Chronos, your Personal Assistant. You can add tasks manually or type commands to me below!" },
+      { sender: "assistant", text: "Try typing: `water flowers at 15:00, meeting at 16:00` to schedule multiple tasks at once." }
+    ];
+  }
+
+  AppState.chatHistory.forEach(msg => {
+    const msgEl = document.createElement("div");
+    if (msg.sender === "assistant") {
+      msgEl.className = `chat-message assistant-message ${msg.className || ""}`;
+      msgEl.innerHTML = `
+        <div class="message-content">${formatMarkdown(msg.text)}</div>
+        <div class="message-meta">${msg.time || "Just now"}</div>
+      `;
+    } else {
+      msgEl.className = "chat-message user-message";
+      msgEl.innerHTML = `
+        <div class="message-content">${msg.text}</div>
+        <div class="message-meta">${msg.time || "Just now"}</div>
+      `;
+    }
+    log.appendChild(msgEl);
+  });
   log.scrollTop = log.scrollHeight;
 }
 
-function addUserMessage(text) {
+function addAssistantMessage(text, className = "") {
+  if (!AppState.chatHistory) AppState.chatHistory = [];
+  const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  AppState.chatHistory.push({ sender: "assistant", text: text, className: className, time: timeStr });
+  saveState();
+
   const log = document.getElementById("pa-chat-log");
-  const msg = document.createElement("div");
-  msg.className = "chat-message user-message";
-  msg.innerHTML = `
-    <div class="message-content">${text}</div>
-    <div class="message-meta">Just now</div>
-  `;
-  log.appendChild(msg);
-  log.scrollTop = log.scrollHeight;
+  if (log) {
+    const msg = document.createElement("div");
+    msg.className = `chat-message assistant-message ${className}`;
+    msg.innerHTML = `
+      <div class="message-content">${formatMarkdown(text)}</div>
+      <div class="message-meta">${timeStr}</div>
+    `;
+    log.appendChild(msg);
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function addUserMessage(text) {
+  if (!AppState.chatHistory) AppState.chatHistory = [];
+  const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  AppState.chatHistory.push({ sender: "user", text: text, time: timeStr });
+  saveState();
+
+  const log = document.getElementById("pa-chat-log");
+  if (log) {
+    const msg = document.createElement("div");
+    msg.className = "chat-message user-message";
+    msg.innerHTML = `
+      <div class="message-content">${text}</div>
+      <div class="message-meta">${timeStr}</div>
+    `;
+    log.appendChild(msg);
+    log.scrollTop = log.scrollHeight;
+  }
 }
 
 // --- Personal Assistant Conversational Command Parser ---
@@ -1112,17 +1156,15 @@ function handleAssistantCommand(e) {
   }, 400);
 }
 
-function parseCommand(cmd) {
-  const todayStr = getLocalDateString(new Date());
-  let taskTitle = "";
+function extractTime(text) {
   let timeStr = "";
   let isRelative = false;
   let delayMinutes = 0;
-  let text = cmd.trim();
+  let cleanedText = text.trim();
 
   // 1. Check for Relative Time
   const relativeRegex = /\b(?:in|after)\s+(\d+)\s*(min|mins|minute|minutes|hour|hours|hr|hrs)\b/i;
-  const relativeMatch = text.match(relativeRegex);
+  const relativeMatch = cleanedText.match(relativeRegex);
 
   if (relativeMatch) {
     isRelative = true;
@@ -1133,11 +1175,11 @@ function parseCommand(cmd) {
     delayMinutes = quantity * multiplier;
     const targetTime = new Date(Date.now() + delayMinutes * 60 * 1000);
     timeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
-    text = text.replace(relativeRegex, "").trim();
+    cleanedText = cleanedText.replace(relativeRegex, "").trim();
   } else {
     // 2. Check for Absolute Time
     const absoluteRegex = /\b(?:at|for|by)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b$/i;
-    const absoluteMatch = text.match(absoluteRegex);
+    const absoluteMatch = cleanedText.match(absoluteRegex);
 
     if (absoluteMatch) {
       let hour = parseInt(absoluteMatch[1]);
@@ -1146,24 +1188,19 @@ function parseCommand(cmd) {
       if (ampm === "pm" && hour < 12) hour += 12;
       if (ampm === "am" && hour === 12) hour = 0;
       timeStr = `${String(hour).padStart(2, '0')}:${minute}`;
-      text = text.replace(absoluteRegex, "").trim();
+      cleanedText = cleanedText.replace(absoluteRegex, "").trim();
     }
   }
 
-  // Default to 1 hour from now if no time parsed
-  if (!timeStr) {
-    const targetTime = new Date(Date.now() + 60 * 60 * 1000);
-    timeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
-    isRelative = true;
-    delayMinutes = 60;
-  }
+  return { timeStr, isRelative, delayMinutes, cleanedText };
+}
 
-  // Clean title
+function cleanTaskTitle(text) {
   const prefixes = [
     /^(?:remind me to|remind me|remind|add task|add|todo|schedule|alert)\s+/i,
     /^(?:to|for|at|in)\s+/i
   ];
-  let cleaned = text;
+  let cleaned = text.trim();
   let changed = true;
   while (changed) {
     changed = false;
@@ -1174,17 +1211,21 @@ function parseCommand(cmd) {
   }
   cleaned = cleaned.replace(/^(?:to|for|at|in|by)\s+/i, "").trim();
   cleaned = cleaned.replace(/\s+(?:to|for|at|in|by)$/i, "").trim();
-  taskTitle = cleaned || "Reminder";
+  return cleaned || "Reminder";
+}
 
+function createAndSaveTask(title, timeStr, isRelative, delayMinutes) {
+  const todayStr = getLocalDateString(new Date());
+  const randomSuffix = Math.random().toString(36).substring(2, 7);
   const newTask = {
-    id: "task-" + Date.now(),
-    title: taskTitle,
+    id: "task-" + Date.now() + "-" + randomSuffix,
+    title: title,
     date: todayStr,
     time: timeStr,
     priority: "medium",
     status: "pending",
     notified: false,
-    dueTimestamp: getTaskTimestamp(todayStr, timeStr)  // UTC epoch ms for Cloud Function
+    dueTimestamp: getTaskTimestamp(todayStr, timeStr)
   };
 
   if (db && currentUser) {
@@ -1197,9 +1238,71 @@ function parseCommand(cmd) {
   }
 
   if (isRelative) {
-    addAssistantMessage(`✍️ Reminder set: "**${taskTitle}**" in ${delayMinutes} minutes (at ${timeStr}).`);
+    addAssistantMessage(`✍️ Reminder set: "**${title}**" in ${delayMinutes} minutes (at ${timeStr}).`);
   } else {
-    addAssistantMessage(`📅 Scheduled: "**${taskTitle}**" today at ${timeStr}.`);
+    addAssistantMessage(`📅 Scheduled: "**${title}**" today at ${timeStr}.`);
+  }
+}
+
+function parseCommand(cmd) {
+  const text = cmd.trim();
+  if (!text) return;
+
+  // Split by comma or semicolon
+  const separators = /[;,]+/;
+  const parts = text.split(separators).map(p => p.trim()).filter(Boolean);
+
+  if (parts.length > 1) {
+    // Multiple tasks!
+    let inheritedTimeStr = "";
+    let inheritedIsRelative = false;
+    let inheritedDelayMinutes = 0;
+
+    // Scan backwards to find the last specified time
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const partInfo = extractTime(parts[i]);
+      if (partInfo.timeStr) {
+        inheritedTimeStr = partInfo.timeStr;
+        inheritedIsRelative = partInfo.isRelative;
+        inheritedDelayMinutes = partInfo.delayMinutes;
+        break;
+      }
+    }
+
+    // Default to 1 hour from now if no time was specified in any part
+    if (!inheritedTimeStr) {
+      const targetTime = new Date(Date.now() + 60 * 60 * 1000);
+      inheritedTimeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
+      inheritedIsRelative = true;
+      inheritedDelayMinutes = 60;
+    }
+
+    // Parse and create each task
+    parts.forEach(part => {
+      const partInfo = extractTime(part);
+      const timeStr = partInfo.timeStr || inheritedTimeStr;
+      const isRelative = partInfo.timeStr ? partInfo.isRelative : inheritedIsRelative;
+      const delayMinutes = partInfo.timeStr ? partInfo.delayMinutes : inheritedDelayMinutes;
+      
+      const cleanedTitle = cleanTaskTitle(partInfo.cleanedText);
+      createAndSaveTask(cleanedTitle, timeStr, isRelative, delayMinutes);
+    });
+  } else {
+    // Single task
+    const partInfo = extractTime(text);
+    let timeStr = partInfo.timeStr;
+    let isRelative = partInfo.isRelative;
+    let delayMinutes = partInfo.delayMinutes;
+
+    if (!timeStr) {
+      const targetTime = new Date(Date.now() + 60 * 60 * 1000);
+      timeStr = `${String(targetTime.getHours()).padStart(2, '0')}:${String(targetTime.getMinutes()).padStart(2, '0')}`;
+      isRelative = true;
+      delayMinutes = 60;
+    }
+
+    const cleanedTitle = cleanTaskTitle(partInfo.cleanedText);
+    createAndSaveTask(cleanedTitle, timeStr, isRelative, delayMinutes);
   }
 }
 
@@ -1275,6 +1378,25 @@ function initEventListeners() {
   document.getElementById("sidebar-close-btn").addEventListener("click", () => toggleSidebar(false));
   document.getElementById("sidebar-backdrop").addEventListener("click", () => toggleSidebar(false));
   document.getElementById("mobile-chat-fab").addEventListener("click", () => toggleSidebar());
+
+  // Clear chat button
+  const clearChatBtn = document.getElementById("clear-chat-btn");
+  if (clearChatBtn) {
+    clearChatBtn.addEventListener("click", () => {
+      AppState.chatHistory = [];
+      saveState();
+      renderChatHistory();
+      addAssistantMessage("🧹 Chat logs cleared.");
+    });
+  }
+
+  // Auth modal close button
+  const authCloseBtn = document.getElementById("auth-close-btn");
+  if (authCloseBtn) {
+    authCloseBtn.addEventListener("click", () => {
+      document.getElementById("auth-overlay").classList.add("hidden");
+    });
+  }
 
 
   // Reschedule modal
