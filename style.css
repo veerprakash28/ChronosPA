@@ -1224,6 +1224,12 @@ body {
   box-shadow: 0 0 40px rgba(0, 243, 255, 0.15), 0 20px 40px rgba(0,0,0,0.6);
 }
 
+.alert-header {
+  flex-direction: column;
+  justify-content: center;
+}
+
+
 .alert-bell-container {
   width: 70px;
   height: 70px;
