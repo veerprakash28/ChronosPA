@@ -63,7 +63,8 @@ let AppState = {
   currentCalendarMonth: new Date().getMonth(),
   currentCalendarYear: new Date().getFullYear(),
   selectedCalendarDate: new Date(),
-  activeAlertTask: null
+  activeAlertTask: null,
+  modalSource: "manual"
 };
 
 // --- Constant Priority Mappings ---
@@ -73,28 +74,43 @@ const PriorityLabel = {
   high: "HIGH PRIORITY"
 };
 
+const statusLabels = {
+  "not-started": "Not Started",
+  "in-progress": "In Progress",
+  "completed": "Completed",
+  "pushed": "Pushed to Tomorrow"
+};
+
+const priorityLabels = {
+  "low": "Low",
+  "medium": "Medium",
+  "high": "High"
+};
+
 // --- On Initial Load ---
 document.addEventListener("DOMContentLoaded", async () => {
+  // Always load the local state (tasks, preferences, chat logs) on startup first
+  loadState();
+
   initClock();
   initCalendar();
   initEventListeners();
   requestNotificationPermission(true); // check status silently
-
-  // Always load the local state (tasks, preferences, chat logs) on startup
-  loadState();
   renderChatHistory();
 
   const configLoaded = await loadFirebaseConfig();
   firebaseActive = configLoaded && initFirebase();
 
+  // Always initialize auth form toggles and SSO bindings so the UI handles clicks normally
+  initFirebaseAuth();
+
   if (!firebaseActive) {
-    // No Firebase config — silently skip sign-in and go straight to the app
+    // No Firebase config — silently skip sign-in overlay and go straight to the app
     document.getElementById("auth-overlay").classList.add("hidden");
     checkOverduePreviousDays();
     refreshAllViews();
   } else {
-    // Firebase is active — set up auth and real-time sync
-    initFirebaseAuth();
+    // Firebase is active — register service worker
     registerServiceWorker();
   }
 });
@@ -111,7 +127,14 @@ function loadState() {
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
-      AppState.tasks = (parsed.tasks || []).filter(t => !t.id.startsWith("demo-"));
+      AppState.tasks = (parsed.tasks || []).filter(t => !t.id.startsWith("demo-")).map(t => {
+        // Convert old status values to the new Notion-like schema
+        if (t.status === "pending") t.status = "not-started";
+        if (!t.status) t.status = "not-started";
+        if (!t.source) t.source = "manual";
+        if (!t.reminderSchedule) t.reminderSchedule = "once";
+        return t;
+      });
       AppState.preferences = parsed.preferences || AppState.preferences;
       AppState.chatHistory = parsed.chatHistory || [];
     } catch (e) {
@@ -164,6 +187,12 @@ function initFirebaseAuth() {
 
   // Google Sign-In handler (works for both Sign In and Sign Up)
   const handleGoogleSignIn = () => {
+    if (!firebaseActive) {
+      const errorEl = document.getElementById("login-error");
+      errorEl.textContent = "Google Sign-In is temporarily unavailable. Please try again later.";
+      errorEl.classList.remove("hidden");
+      return;
+    }
     const provider = new firebase.auth.GoogleAuthProvider();
     auth.signInWithPopup(provider)
       .then((result) => {
@@ -186,11 +215,18 @@ function initFirebaseAuth() {
   // Login Submit handler
   document.getElementById("auth-login-form").addEventListener("submit", (e) => {
     e.preventDefault();
+    const errorEl = document.getElementById("login-error");
+    errorEl.classList.add("hidden");
+
+    if (!firebaseActive) {
+      errorEl.textContent = "Sign in is temporarily unavailable. Please try again later.";
+      errorEl.classList.remove("hidden");
+      return;
+    }
+
     const email = document.getElementById("login-email").value.trim();
     const password = document.getElementById("login-password").value;
-    const errorEl = document.getElementById("login-error");
 
-    errorEl.classList.add("hidden");
     auth.signInWithEmailAndPassword(email, password)
       .then(() => {
         document.getElementById("login-email").value = "";
@@ -205,12 +241,19 @@ function initFirebaseAuth() {
   // Signup Submit handler
   document.getElementById("auth-signup-form").addEventListener("submit", (e) => {
     e.preventDefault();
+    const errorEl = document.getElementById("signup-error");
+    errorEl.classList.add("hidden");
+
+    if (!firebaseActive) {
+      errorEl.textContent = "Creating an account is temporarily unavailable. Please try again later.";
+      errorEl.classList.remove("hidden");
+      return;
+    }
+
     const name = document.getElementById("signup-name").value.trim();
     const email = document.getElementById("signup-email").value.trim();
     const password = document.getElementById("signup-password").value;
-    const errorEl = document.getElementById("signup-error");
 
-    errorEl.classList.add("hidden");
     auth.createUserWithEmailAndPassword(email, password)
       .then((userCredential) => {
         const user = userCredential.user;
@@ -229,67 +272,66 @@ function initFirebaseAuth() {
   });
 
   // Auth state change handler — the core of the user experience
-  auth.onAuthStateChanged(user => {
-    const authOverlay = document.getElementById("auth-overlay");
-    const nameLabel = document.getElementById("profile-name-label");
-    const dropName = document.getElementById("dropdown-user-name");
-    const dropEmail = document.getElementById("dropdown-user-email");
-    const signInBtn = document.getElementById("auth-open-btn");
-    const signOutBtn = document.getElementById("auth-signout-btn");
+  if (firebaseActive && auth) {
+    auth.onAuthStateChanged(user => {
+      const authOverlay = document.getElementById("auth-overlay");
+      const nameLabel = document.getElementById("profile-name-label");
+      const dropName = document.getElementById("dropdown-user-name");
+      const dropEmail = document.getElementById("dropdown-user-email");
+      const signInBtn = document.getElementById("auth-open-btn");
+      const signOutBtn = document.getElementById("auth-signout-btn");
 
-    if (user) {
-      currentUser = user;
+      if (user) {
+        currentUser = user;
 
-      // Update UI
-      const displayName = user.displayName || user.email.split("@")[0];
-      nameLabel.textContent = displayName;
-      dropName.textContent = displayName;
-      dropEmail.textContent = user.email;
-      AppState.preferences.username = displayName;
+        // Update UI
+        const displayName = user.displayName || user.email.split("@")[0];
+        nameLabel.textContent = displayName;
+        dropName.textContent = displayName;
+        dropEmail.textContent = user.email;
+        AppState.preferences.username = displayName;
 
-      // Show sign out, hide sign in
-      if (signInBtn) signInBtn.classList.add("hidden");
-      if (signOutBtn) signOutBtn.classList.remove("hidden");
+        // Show sign out, hide sign in
+        if (signInBtn) signInBtn.classList.add("hidden");
+        if (signOutBtn) signOutBtn.classList.remove("hidden");
 
-      // Hide login overlay
-      authOverlay.classList.add("hidden");
+        // Hide login overlay
+        authOverlay.classList.add("hidden");
 
-      // Start Firestore real-time sync
-      syncTasksFromFirestore(user.uid);
+        // Start Firestore real-time sync
+        syncTasksFromFirestore(user.uid);
 
-      // Register FCM push token for this device
-      initFcmMessaging(user.uid);
+        // Register FCM push token for this device
+        initFcmMessaging(user.uid);
 
-      addAssistantMessage(`🔒 Synced! Welcome back, **${displayName}**.`);
-    } else {
-      currentUser = null;
+        addAssistantMessage(`🔒 Synced! Welcome back, **${displayName}**.`);
+      } else {
+        currentUser = null;
 
-      // Reset UI
-      nameLabel.textContent = "Sign In";
-      dropName.textContent = "Guest User";
-      dropEmail.textContent = "Please sign in to sync";
+        // Reset UI
+        nameLabel.textContent = "Sign In";
+        dropName.textContent = "Guest User";
+        dropEmail.textContent = "Please sign in to sync";
 
-      // Reset user state to local guest mode
-      AppState.preferences.username = "User";
-      loadState(); // Restore local guest tasks and chat logs
+        // Reset user state to local guest mode
+        AppState.preferences.username = "User";
+        loadState(); // Restore local guest tasks and chat logs
 
-      // Show sign in, hide sign out
-      if (signInBtn) signInBtn.classList.remove("hidden");
-      if (signOutBtn) signOutBtn.classList.add("hidden");
+        // Show sign in, hide sign out
+        if (signInBtn) signInBtn.classList.remove("hidden");
+        if (signOutBtn) signOutBtn.classList.add("hidden");
 
-      // Unsubscribe from Firestore
-      if (userTasksUnsubscribe) {
-        userTasksUnsubscribe();
-        userTasksUnsubscribe = null;
+        // Unsubscribe from Firestore
+        if (userTasksUnsubscribe) {
+          userTasksUnsubscribe();
+          userTasksUnsubscribe = null;
+        }
+
+        // Render local state
+        refreshAllViews();
       }
-
-      // Show login overlay
-      authOverlay.classList.remove("hidden");
-
-      // Render local state
-      refreshAllViews();
-    }
-  });
+    });
+  }
 }
 
 // Convert Firebase error codes to user-friendly messages
@@ -567,11 +609,59 @@ function checkSchedulerAlerts(now) {
   let stateUpdated = false;
 
   AppState.tasks.forEach(task => {
-    if (task.date === todayStr && task.status === "pending" && !task.notified) {
+    // 1. Standard reminder check
+    if (task.date === todayStr && task.status !== "completed" && task.status !== "pushed" && !task.notified) {
       if (task.time <= currentTimeStr) {
         task.notified = true;
         stateUpdated = true;
-        triggerReminder(task);
+        triggerReminder(task, false);
+      }
+    }
+
+    // 2. Leading reminder check for future tasks
+    if (task.date > todayStr && task.status !== "completed" && task.status !== "pushed") {
+      if (task.reminderSchedule === "daily-lead" || task.reminderSchedule === "weekly-lead") {
+        if (task.time <= currentTimeStr) {
+          const eventDate = new Date(task.date + "T00:00:00");
+          const todayDate = new Date(todayStr + "T00:00:00");
+          const diffTime = eventDate.getTime() - todayDate.getTime();
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+          if (diffDays > 0) {
+            let shouldTrigger = false;
+
+            if (task.reminderSchedule === "daily-lead") {
+              if (task.lastLeadingReminderFiredDate !== todayStr) {
+                shouldTrigger = true;
+              }
+            } else if (task.reminderSchedule === "weekly-lead") {
+              if (task.lastLeadingReminderFiredDate !== todayStr) {
+                if (!task.lastLeadingReminderFiredDate) {
+                  if (diffDays % 7 === 0) {
+                    shouldTrigger = true;
+                  }
+                } else {
+                  const lastFire = new Date(task.lastLeadingReminderFiredDate + "T00:00:00");
+                  const daysSinceLastFire = Math.ceil((todayDate.getTime() - lastFire.getTime()) / (1000 * 60 * 60 * 24));
+                  if (daysSinceLastFire >= 7) {
+                    shouldTrigger = true;
+                  }
+                }
+              }
+            }
+
+            if (shouldTrigger) {
+              task.lastLeadingReminderFiredDate = todayStr;
+              stateUpdated = true;
+              triggerReminder(task, true);
+
+              if (db && currentUser) {
+                firestoreUpdateTask(task.id, { lastLeadingReminderFiredDate: todayStr })
+                  .catch(err => console.error("Update leading reminder fire date failed:", err));
+              }
+            }
+          }
+        }
       }
     }
   });
@@ -586,10 +676,20 @@ function checkSchedulerAlerts(now) {
 }
 
 // --- Trigger System-level & In-App Alerts ---
-function triggerReminder(task) {
+function triggerReminder(task, isLeading = false) {
+  let title = task.title;
+  let body = isLeading ? `Upcoming event on ${task.date} at ${task.time}` : `Scheduled for today at ${task.time}`;
+  let textForChat = `⏰ ALERT: Time to do: "**${task.title}**". Mark completed or postpone it.`;
+
+  if (isLeading) {
+    const leadType = task.reminderSchedule === "daily-lead" ? "Daily" : "Weekly";
+    title = `⏰ ${leadType} Reminder: ${task.title}`;
+    textForChat = `⏰ ${leadType} Leading Reminder: Prepare for "**${task.title}**" (Event on ${task.date} at ${task.time}).`;
+  }
+
   if (AppState.preferences.notificationsMuted) {
-    addAssistantMessage(`⏰ ALERT (Muted): Time to do: "**${task.title}**".`, "alert-msg");
-    showInAppAlertModal(task);
+    addAssistantMessage(`${textForChat} (Muted)`, "alert-msg");
+    showInAppAlertModal(task, isLeading);
     return;
   }
 
@@ -597,8 +697,8 @@ function triggerReminder(task) {
 
   if (Notification.permission === "granted") {
     try {
-      new Notification(`Chronos PA: Time for Task`, {
-        body: task.title,
+      new Notification(title, {
+        body: body,
         icon: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="%2300f3ff"><circle cx="50" cy="50" r="40" stroke="black" stroke-width="4"/></svg>'
       });
     } catch (e) {
@@ -606,22 +706,28 @@ function triggerReminder(task) {
     }
   }
 
-  addAssistantMessage(`⏰ ALERT: Time to do: "**${task.title}**". Mark completed or postpone it.`, "alert-msg");
-  showInAppAlertModal(task);
+  addAssistantMessage(textForChat, "alert-msg");
+  showInAppAlertModal(task, isLeading);
 }
 
-function showInAppAlertModal(task) {
+function showInAppAlertModal(task, isLeading = false) {
   AppState.activeAlertTask = task;
 
   document.getElementById("alert-task-title").textContent = task.title;
   const [h, m] = task.time.split(":");
   const ampm = h >= 12 ? "PM" : "AM";
   const displayTime = `${h % 12 || 12}:${m} ${ampm}`;
-  document.getElementById("alert-task-time").textContent = displayTime;
+
+  if (isLeading) {
+    const leadType = task.reminderSchedule === "daily-lead" ? "Daily" : "Weekly";
+    document.getElementById("alert-task-time").textContent = `${leadType} Alert (Event: ${task.date} ${displayTime})`;
+  } else {
+    document.getElementById("alert-task-time").textContent = displayTime;
+  }
 
   const priorityBadge = document.getElementById("alert-task-priority");
   priorityBadge.className = `alert-priority-badge prio-${task.priority}`;
-  priorityBadge.textContent = PriorityLabel[task.priority];
+  priorityBadge.textContent = PriorityLabel[task.priority] + (isLeading ? " (UPCOMING)" : "");
 
   document.getElementById("alert-overlay").classList.remove("hidden");
 }
@@ -708,103 +814,278 @@ function refreshAllViews() {
 
 // --- UI Board & Timeline Renderers ---
 function renderTimeline() {
-  const container = document.getElementById("task-timeline");
+  const todoContainer = document.getElementById("todo-tasks-list");
+  const chatContainer = document.getElementById("chat-tasks-list");
+  if (!todoContainer || !chatContainer) return;
+
   const todayStr = getLocalDateString(new Date());
   const todayTasks = AppState.tasks.filter(t => t.date === todayStr);
-
-  if (todayTasks.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="12" cy="12" r="10"></circle>
-          <path d="M12 8v4l3 3"></path>
-        </svg>
-        <h4>Your Schedule is Clear</h4>
-        <p>Type in the assistant panel or click '+' to schedule your first reminder.</p>
-      </div>
-    `;
-    return;
-  }
 
   todayTasks.sort((a, b) => a.time.localeCompare(b.time));
 
   const now = new Date();
   const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-  container.innerHTML = "";
+  const todoTasks = todayTasks.filter(t => t.source !== "chat");
+  const chatTasks = todayTasks.filter(t => t.source === "chat");
 
-  todayTasks.forEach(task => {
-    let statusClass = "pending";
-    if (task.status === "completed") {
-      statusClass = "completed";
-    } else if (task.time < currentTimeStr) {
-      statusClass = "overdue";
-    } else if (task.notified) {
-      statusClass = "active";
-    }
-
-    const [h, m] = task.time.split(":");
-    const ampm = h >= 12 ? "PM" : "AM";
-    const displayTime = `${h % 12 || 12}:${m} ${ampm}`;
-
-    const item = document.createElement("div");
-    item.className = `timeline-item ${statusClass}`;
-    if (task.carriedFrom) item.classList.add("carried");
-
-    item.innerHTML = `
-      <div class="timeline-marker">
-        <div class="marker-node"></div>
-      </div>
-      <div class="task-card">
-        <div class="task-main-info">
-          <label class="task-checkbox-container">
-            <input type="checkbox" ${task.status === 'completed' ? 'checked' : ''} onchange="toggleTaskComplete('${task.id}')">
-            <span class="checkmark"></span>
-          </label>
-          <div class="task-text">
-            <h4>${task.title}</h4>
-            <div class="task-meta-row">
-              <span class="task-time-pill">
-                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-                ${displayTime}
-              </span>
-              <span class="priority-badge prio-${task.priority}-badge">${task.priority}</span>
-              ${task.carriedFrom ? `
-                <span class="carried-badge" title="Carried from ${task.carriedFrom}">
-                  <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <polyline points="23 4 23 10 17 10"></polyline>
-                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-                  </svg>
-                  Carried
-                </span>` : ''}
-            </div>
-          </div>
-        </div>
-        <div class="task-actions">
-          <button class="task-action-btn btn-reschedule-task" onclick="openRescheduleModal('${task.id}')" title="Reschedule Task">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-              <line x1="16" y1="2" x2="16" y2="6"></line>
-              <line x1="8" y1="2" x2="8" y2="6"></line>
-              <line x1="3" y1="10" x2="21" y2="10"></line>
-            </svg>
-          </button>
-          <button class="task-action-btn btn-delete-task" onclick="deleteTask('${task.id}')" title="Delete Task">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="3 6 5 6 21 6"></polyline>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-              <line x1="10" y1="11" x2="10" y2="17"></line>
-              <line x1="14" y1="11" x2="14" y2="17"></line>
-            </svg>
-          </button>
-        </div>
+  // Render Todo Column
+  if (todoTasks.length === 0) {
+    todoContainer.innerHTML = `
+      <div class="empty-state">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 8v4l3 3"></path>
+        </svg>
+        <h4>No Manual Tasks</h4>
+        <p>Click '+' above to schedule a task.</p>
       </div>
     `;
-    container.appendChild(item);
+  } else {
+    todoContainer.innerHTML = "";
+    todoTasks.forEach(task => renderTaskCard(todoContainer, task, currentTimeStr));
+  }
+
+  // Render Chat Column
+  if (chatTasks.length === 0) {
+    chatContainer.innerHTML = `
+      <div class="empty-state">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 8v4l3 3"></path>
+        </svg>
+        <h4>No Chat Tasks</h4>
+        <p>Ask the assistant to schedule a task.</p>
+      </div>
+    `;
+  } else {
+    chatContainer.innerHTML = "";
+    chatTasks.forEach(task => renderTaskCard(chatContainer, task, currentTimeStr));
+  }
+}
+
+function renderTaskCard(container, task, currentTimeStr) {
+  let statusClass = "pending";
+  if (task.status === "completed") {
+    statusClass = "completed";
+  } else if (task.status === "pushed") {
+    statusClass = "pushed";
+  } else if (task.date === getLocalDateString(new Date()) && task.time < currentTimeStr) {
+    statusClass = "overdue";
+  } else if (task.notified) {
+    statusClass = "active";
+  }
+
+  const [h, m] = task.time.split(":");
+  const ampm = h >= 12 ? "PM" : "AM";
+  const displayTime = `${h % 12 || 12}:${m} ${ampm}`;
+
+  const item = document.createElement("div");
+  item.className = `timeline-item ${statusClass}`;
+  if (task.carriedFrom) item.classList.add("carried");
+
+  item.innerHTML = `
+    <div class="timeline-marker">
+      <div class="marker-node"></div>
+    </div>
+    <div class="task-card">
+      <div class="task-main-info">
+        <label class="task-checkbox-container">
+          <input type="checkbox" ${task.status === 'completed' ? 'checked' : ''} onchange="toggleTaskComplete('${task.id}')">
+          <span class="checkmark"></span>
+        </label>
+        <div class="task-text">
+          <h4 class="${task.status === 'completed' ? 'completed-text' : ''}">${task.title}</h4>
+          <div class="task-meta-row">
+            <span class="task-time-pill">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              ${displayTime}
+            </span>
+            <div class="task-notion-tags">
+              <span class="notion-tag status-${task.status}" onclick="showStatusDropdown('${task.id}', event)">${statusLabels[task.status] || task.status}</span>
+              <span class="notion-tag prio-${task.priority}" onclick="showPriorityDropdown('${task.id}', event)">${priorityLabels[task.priority] || task.priority}</span>
+            </div>
+            ${task.carriedFrom ? `
+              <span class="carried-badge" title="Carried from ${task.carriedFrom}">
+                <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="23 4 23 10 17 10"></polyline>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                </svg>
+                Carried
+              </span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="task-actions">
+        <button class="task-action-btn btn-reschedule-task" onclick="openRescheduleModal('${task.id}')" title="Reschedule Task">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="16" y1="2" x2="16" y2="6"></line>
+            <line x1="8" y1="2" x2="8" y2="6"></line>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+          </svg>
+        </button>
+        <button class="task-action-btn btn-delete-task" onclick="deleteTask('${task.id}')" title="Delete Task">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <line x1="10" y1="11" x2="10" y2="17"></line>
+            <line x1="14" y1="11" x2="14" y2="17"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+  `;
+  container.appendChild(item);
+}
+
+function showStatusDropdown(taskId, event) {
+  event.stopPropagation();
+  event.preventDefault();
+
+  const existing = document.querySelector(".notion-dropdown");
+  if (existing) {
+    existing.remove();
+  }
+
+  const task = AppState.tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  const rect = event.currentTarget.getBoundingClientRect();
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "notion-dropdown";
+  dropdown.style.top = `${rect.bottom + window.scrollY + 4}px`;
+  dropdown.style.left = `${rect.left + window.scrollX}px`;
+
+  const statuses = [
+    { value: "not-started", label: "Not Started", icon: "⚪" },
+    { value: "in-progress", label: "In Progress", icon: "🟡" },
+    { value: "completed", label: "Completed", icon: "🟢" },
+    { value: "pushed", label: "Pushed to Tomorrow", icon: "🟣" }
+  ];
+
+  statuses.forEach(s => {
+    const item = document.createElement("button");
+    item.className = "notion-dropdown-item";
+    if (task.status === s.value) {
+      item.classList.add("active");
+    }
+    item.innerHTML = `<span>${s.icon}</span> <span>${s.label}</span>`;
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      updateTaskStatus(taskId, s.value);
+      dropdown.remove();
+    });
+    dropdown.appendChild(item);
   });
+
+  document.body.appendChild(dropdown);
+}
+
+function showPriorityDropdown(taskId, event) {
+  event.stopPropagation();
+  event.preventDefault();
+
+  const existing = document.querySelector(".notion-dropdown");
+  if (existing) {
+    existing.remove();
+  }
+
+  const task = AppState.tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  const rect = event.currentTarget.getBoundingClientRect();
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "notion-dropdown";
+  dropdown.style.top = `${rect.bottom + window.scrollY + 4}px`;
+  dropdown.style.left = `${rect.left + window.scrollX}px`;
+
+  const priorities = [
+    { value: "low", label: "Low Priority", icon: "🔵" },
+    { value: "medium", label: "Medium Priority", icon: "🔴" },
+    { value: "high", label: "High Priority", icon: "⚡" }
+  ];
+
+  priorities.forEach(p => {
+    const item = document.createElement("button");
+    item.className = "notion-dropdown-item";
+    if (task.priority === p.value) {
+      item.classList.add("active");
+    }
+    item.innerHTML = `<span>${p.icon}</span> <span>${p.label}</span>`;
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      updateTaskPriority(taskId, p.value);
+      dropdown.remove();
+    });
+    dropdown.appendChild(item);
+  });
+
+  document.body.appendChild(dropdown);
+}
+
+function updateTaskStatus(taskId, newStatus) {
+  const task = AppState.tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  if (newStatus === "pushed") {
+    const currentTaskDate = task.date;
+    const nextDay = new Date(currentTaskDate + "T00:00:00");
+    nextDay.setDate(nextDay.getDate() + 1);
+    const nextDayStr = getLocalDateString(nextDay);
+
+    const updates = {
+      date: nextDayStr,
+      status: "pushed",
+      carriedFrom: currentTaskDate
+    };
+
+    if (db && currentUser) {
+      firestoreUpdateTask(taskId, updates)
+        .then(() => {
+          addAssistantMessage(`🔄 Pushed task "**${task.title}**" to tomorrow (${nextDayStr}).`);
+        })
+        .catch(err => console.error("Push task failed:", err));
+    } else {
+      task.date = nextDayStr;
+      task.status = "pushed";
+      task.carriedFrom = currentTaskDate;
+      saveState();
+      refreshAllViews();
+      addAssistantMessage(`🔄 Pushed task "${task.title}" to tomorrow (${nextDayStr}).`);
+    }
+    return;
+  }
+
+  const nextNotified = (newStatus === "completed") ? task.notified : false;
+
+  const updates = {
+    status: newStatus,
+    notified: nextNotified
+  };
+
+  if (db && currentUser) {
+    firestoreUpdateTask(taskId, updates)
+      .then(() => {
+        if (newStatus === "completed") {
+          addAssistantMessage(`🎉 Great job completing "**${task.title}**"!`);
+        }
+      })
+      .catch(err => console.error("Update status failed:", err));
+  } else {
+    task.status = newStatus;
+    task.notified = nextNotified;
+    saveState();
+    refreshAllViews();
+    if (newStatus === "completed") {
+      addAssistantMessage(`🎉 Great job completing "${task.title}"!`);
+    }
+  }
 }
 
 // --- Toggle Tasks completed status ---
@@ -812,10 +1093,10 @@ function toggleTaskComplete(taskId) {
   const task = AppState.tasks.find(t => t.id === taskId);
   if (!task) return;
 
-  const nextStatus = (task.status === "completed") ? "pending" : "completed";
+  const nextStatus = (task.status === "completed") ? "not-started" : "completed";
   let nextNotified = task.notified;
 
-  if (nextStatus === "pending") {
+  if (nextStatus === "not-started") {
     const now = new Date();
     const todayStr = getLocalDateString(now);
     const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -840,6 +1121,22 @@ function toggleTaskComplete(taskId) {
     if (task.status === "completed") {
       addAssistantMessage(`🎉 Great job completing "${task.title}"!`);
     }
+  }
+}
+
+function updateTaskPriority(taskId, newPriority) {
+  const task = AppState.tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  const updates = { priority: newPriority };
+
+  if (db && currentUser) {
+    firestoreUpdateTask(taskId, updates)
+      .catch(err => console.error("Update priority failed:", err));
+  } else {
+    task.priority = newPriority;
+    saveState();
+    refreshAllViews();
   }
 }
 
@@ -1009,7 +1306,7 @@ function updateMetrics() {
 function openAddTaskModal() {
   const overlay = document.getElementById("task-modal-overlay");
   const now = new Date();
-  document.getElementById("task-date").value = getLocalDateString(now);
+  document.getElementById("task-date").value = getLocalDateString(AppState.selectedCalendarDate || now);
 
   const fut = new Date(now.getTime() + 5 * 60 * 1000);
   document.getElementById("task-time").value = `${String(fut.getHours()).padStart(2, '0')}:${String(fut.getMinutes()).padStart(2, '0')}`;
@@ -1033,15 +1330,19 @@ function handleAddTaskSubmit(e) {
   const date = document.getElementById("task-date").value;
   const time = document.getElementById("task-time").value;
   const priority = document.getElementById("task-priority").value;
+  const status = document.getElementById("task-status").value;
   const repeat = document.getElementById("task-repeat").value;
+  const reminderSchedule = document.getElementById("task-reminder-schedule").value;
+  const source = AppState.modalSource || "manual";
 
   if (title && date && time) {
+    const randomSuffix = Math.random().toString(36).substring(2, 7);
     const newTask = {
-      id: "task-" + Date.now(),
-      title, date, time, priority, repeat,
-      status: "pending",
+      id: "task-" + Date.now() + "-" + randomSuffix,
+      title, date, time, priority, repeat, status, reminderSchedule,
+      source: source,
       notified: false,
-      dueTimestamp: getTaskTimestamp(date, time)  // UTC epoch ms — used by Cloud Function for push notifications
+      dueTimestamp: getTaskTimestamp(date, time)
     };
 
     if (db && currentUser) {
@@ -1214,18 +1515,68 @@ function cleanTaskTitle(text) {
   return cleaned || "Reminder";
 }
 
-function createAndSaveTask(title, timeStr, isRelative, delayMinutes) {
+function extractDate(text) {
+  let dateStr = getLocalDateString(new Date());
+  let cleanedText = text.trim();
+
+  // 1. YYYY-MM-DD
+  const ymdRegex = /\b(\d{4})-(\d{2})-(\d{2})\b/;
+  const ymdMatch = cleanedText.match(ymdRegex);
+  if (ymdMatch) {
+    dateStr = `${ymdMatch[1]}-${ymdMatch[2]}-${ymdMatch[3]}`;
+    cleanedText = cleanedText.replace(ymdRegex, "").trim();
+    return { dateStr, cleanedText };
+  }
+
+  // 2. Month words: e.g. "on 22 September" or "on September 22" or "on Sept 22"
+  const monthNames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  
+  const wordDateRegex1 = /\b(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i;
+  const wordDateMatch1 = cleanedText.match(wordDateRegex1);
+  if (wordDateMatch1) {
+    const day = parseInt(wordDateMatch1[1]);
+    const monthIndex = monthNames.indexOf(wordDateMatch1[2].toLowerCase().substring(0, 3));
+    if (monthIndex !== -1) {
+      const year = new Date().getFullYear();
+      const dateVal = new Date(year, monthIndex, day);
+      dateStr = getLocalDateString(dateVal);
+      cleanedText = cleanedText.replace(wordDateRegex1, "").trim();
+      return { dateStr, cleanedText };
+    }
+  }
+
+  const wordDateRegex2 = /\b(?:on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\b/i;
+  const wordDateMatch2 = cleanedText.match(wordDateRegex2);
+  if (wordDateMatch2) {
+    const day = parseInt(wordDateMatch2[2]);
+    const monthIndex = monthNames.indexOf(wordDateMatch2[1].toLowerCase().substring(0, 3));
+    if (monthIndex !== -1) {
+      const year = new Date().getFullYear();
+      const dateVal = new Date(year, monthIndex, day);
+      dateStr = getLocalDateString(dateVal);
+      cleanedText = cleanedText.replace(wordDateRegex2, "").trim();
+      return { dateStr, cleanedText };
+    }
+  }
+
+  return { dateStr, cleanedText };
+}
+
+function createAndSaveTask(title, timeStr, isRelative, delayMinutes, reminderSchedule = "once", taskDate = null, source = "chat") {
   const todayStr = getLocalDateString(new Date());
+  const dateStr = taskDate || todayStr;
   const randomSuffix = Math.random().toString(36).substring(2, 7);
   const newTask = {
     id: "task-" + Date.now() + "-" + randomSuffix,
     title: title,
-    date: todayStr,
+    date: dateStr,
     time: timeStr,
     priority: "medium",
-    status: "pending",
+    status: "not-started",
+    source: source,
+    reminderSchedule: reminderSchedule,
     notified: false,
-    dueTimestamp: getTaskTimestamp(todayStr, timeStr)
+    dueTimestamp: getTaskTimestamp(dateStr, timeStr)
   };
 
   if (db && currentUser) {
@@ -1237,16 +1588,50 @@ function createAndSaveTask(title, timeStr, isRelative, delayMinutes) {
     refreshAllViews();
   }
 
+  const columnLabel = source === "manual" ? "Todo List" : "Conversations";
   if (isRelative) {
-    addAssistantMessage(`✍️ Reminder set: "**${title}**" in ${delayMinutes} minutes (at ${timeStr}).`);
+    addAssistantMessage(`✍️ Reminder set in **${columnLabel}**: "**${title}**" in ${delayMinutes} minutes (at ${timeStr}).`);
   } else {
-    addAssistantMessage(`📅 Scheduled: "**${title}**" today at ${timeStr}.`);
+    const dateLabel = (dateStr === todayStr) ? "today" : `on ${dateStr}`;
+    const scheduleLabel = (reminderSchedule !== "once") ? ` (Alert: ${reminderSchedule === "daily-lead" ? "daily" : "weekly"} leading up)` : "";
+    addAssistantMessage(`📅 Scheduled in **${columnLabel}**: "**${title}**" ${dateLabel} at ${timeStr}${scheduleLabel}.`);
   }
 }
 
 function parseCommand(cmd) {
-  const text = cmd.trim();
+  let text = cmd.trim();
   if (!text) return;
+
+  // Detect routing prefix and strip it
+  let isManualSource = false;
+  const manualPrefixRegex = /^\b(?:add\s+tasks|add\s+task|add\s+todos|add\s+todo|add|todos|todo|schedule\s+tasks|schedule\s+task|schedule)\b\s*:?\s*/i;
+  
+  if (manualPrefixRegex.test(text)) {
+    isManualSource = true;
+    text = text.replace(manualPrefixRegex, "").trim();
+  } else {
+    const remindPrefixRegex = /^\b(?:remind\s+me\s+to|remind\s+me|remind|reminder)\b\s*:?\s*/i;
+    if (remindPrefixRegex.test(text)) {
+      text = text.replace(remindPrefixRegex, "").trim();
+    }
+  }
+
+  const taskSource = isManualSource ? "manual" : "chat";
+
+  // 1. Check for Reminder Schedule keywords (daily, weekly leading up)
+  let reminderSchedule = "once";
+  if (/\b(?:daily reminder|remind daily|daily alert|every day)\b/i.test(text)) {
+    reminderSchedule = "daily-lead";
+    text = text.replace(/\b(?:daily reminder|remind daily|daily alert|every day)\b/i, "").trim();
+  } else if (/\b(?:weekly reminder|remind weekly|weekly alert|every week)\b/i.test(text)) {
+    reminderSchedule = "weekly-lead";
+    text = text.replace(/\b(?:weekly reminder|remind weekly|weekly alert|every week)\b/i, "").trim();
+  }
+
+  // 2. Extract Date (defaults to today's date if not parsed)
+  const dateInfo = extractDate(text);
+  const taskDate = dateInfo.dateStr;
+  text = dateInfo.cleanedText;
 
   // Split by comma or semicolon
   const separators = /[;,]+/;
@@ -1285,7 +1670,7 @@ function parseCommand(cmd) {
       const delayMinutes = partInfo.timeStr ? partInfo.delayMinutes : inheritedDelayMinutes;
       
       const cleanedTitle = cleanTaskTitle(partInfo.cleanedText);
-      createAndSaveTask(cleanedTitle, timeStr, isRelative, delayMinutes);
+      createAndSaveTask(cleanedTitle, timeStr, isRelative, delayMinutes, reminderSchedule, taskDate, taskSource);
     });
   } else {
     // Single task
@@ -1302,7 +1687,7 @@ function parseCommand(cmd) {
     }
 
     const cleanedTitle = cleanTaskTitle(partInfo.cleanedText);
-    createAndSaveTask(cleanedTitle, timeStr, isRelative, delayMinutes);
+    createAndSaveTask(cleanedTitle, timeStr, isRelative, delayMinutes, reminderSchedule, taskDate, taskSource);
   }
 }
 
@@ -1336,7 +1721,17 @@ function initEventListeners() {
   document.getElementById("notification-toggle-btn").addEventListener("click", () => requestNotificationPermission(false));
 
   // Add Task Modal buttons
-  document.getElementById("add-task-modal-btn").addEventListener("click", openAddTaskModal);
+  document.getElementById("add-task-modal-btn").addEventListener("click", () => {
+    AppState.modalSource = "manual";
+    openAddTaskModal();
+  });
+  const addChatBtn = document.getElementById("add-chat-task-modal-btn");
+  if (addChatBtn) {
+    addChatBtn.addEventListener("click", () => {
+      AppState.modalSource = "chat";
+      openAddTaskModal();
+    });
+  }
   document.getElementById("task-modal-close").addEventListener("click", closeAddTaskModal);
   document.getElementById("task-modal-cancel").addEventListener("click", closeAddTaskModal);
   document.getElementById("task-modal-form").addEventListener("submit", handleAddTaskSubmit);
@@ -1453,6 +1848,26 @@ function initEventListeners() {
       }
     }
     hideInAppAlertModal();
+  });
+
+  const dismissBtn = document.getElementById("alert-dismiss-btn");
+  if (dismissBtn) {
+    dismissBtn.addEventListener("click", hideInAppAlertModal);
+  }
+
+  const previewAddBtn = document.getElementById("add-task-from-preview-btn");
+  if (previewAddBtn) {
+    previewAddBtn.addEventListener("click", () => {
+      AppState.modalSource = "manual";
+      openAddTaskModal();
+    });
+  }
+
+  document.addEventListener("click", () => {
+    const existing = document.querySelector(".notion-dropdown");
+    if (existing) {
+      existing.remove();
+    }
   });
 }
 

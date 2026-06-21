@@ -194,10 +194,10 @@
 
       <!-- Main Columns Grid -->
       <section class="dashboard-columns">
-        <!-- Task Management Column -->
-        <article class="board-column tasks-column">
+        <!-- Todo List of the Day Column -->
+        <article class="board-column todo-column">
           <div class="column-header">
-            <h3>Today's Focus & Schedule</h3>
+            <h3>Todo List of the Day</h3>
             <button id="add-task-modal-btn" class="action-icon-btn" title="Add New Task">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -205,7 +205,23 @@
               </svg>
             </button>
           </div>
-          <div class="task-timeline" id="task-timeline">
+          <div class="task-timeline" id="todo-tasks-list">
+            <!-- Timeline elements populated by JS -->
+          </div>
+        </article>
+
+        <!-- Conversations of the Day Column -->
+        <article class="board-column chat-tasks-column">
+          <div class="column-header">
+            <h3>Conversations of the Day</h3>
+            <button id="add-chat-task-modal-btn" class="action-icon-btn" title="Add New Chat Task">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+          </div>
+          <div class="task-timeline" id="chat-tasks-list">
             <!-- Timeline elements populated by JS -->
           </div>
         </article>
@@ -247,6 +263,12 @@
           <div class="day-preview-container">
             <div class="preview-header">
               <h4 id="preview-date-title">Tasks for June 21, 2026</h4>
+              <button id="add-task-from-preview-btn" class="action-icon-btn" title="Add Task for Selected Day">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </button>
             </div>
             <div class="day-preview-list" id="day-preview-list">
               <p class="empty-state-text">Select a date in the calendar to view scheduled items.</p>
@@ -280,6 +302,7 @@
           <button id="alert-complete-btn" class="glow-button-primary">Complete Task</button>
           <button id="alert-postpone-btn" class="glass-button-secondary">Postpone 15 mins</button>
           <button id="alert-carry-btn" class="glass-button-secondary">Carry to Tomorrow</button>
+          <button id="alert-dismiss-btn" class="glass-button-secondary">Dismiss</button>
         </div>
       </div>
     </div>
@@ -324,6 +347,25 @@
               </select>
             </div>
           </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="task-status">Status</label>
+              <select id="task-status">
+                <option value="not-started" selected>Not Started</option>
+                <option value="in-progress">In Progress</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="task-reminder-schedule">Reminder Alert</label>
+              <select id="task-reminder-schedule">
+                <option value="once" selected>On due date only</option>
+                <option value="daily-lead">Daily leading up to event</option>
+                <option value="weekly-lead">Weekly leading up to event</option>
+              </select>
+            </div>
+          </div>
+
           <div class="form-footer">
             <button type="button" id="task-modal-cancel" class="glass-button-secondary">Cancel</button>
             <button type="submit" class="glow-button-primary">Schedule Task</button>
