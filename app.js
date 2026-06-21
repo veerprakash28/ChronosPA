@@ -1857,14 +1857,26 @@ function initEventListeners() {
     });
   }
 
-  const desktopSidebarToggle = document.getElementById("desktop-sidebar-toggle-btn");
-  if (desktopSidebarToggle) {
-    desktopSidebarToggle.addEventListener("click", () => {
-      document.body.classList.toggle("sidebar-collapsed");
+  const sidebarCollapseBtn = document.getElementById("sidebar-collapse-btn");
+  if (sidebarCollapseBtn) {
+    sidebarCollapseBtn.addEventListener("click", () => {
+      document.body.classList.add("sidebar-collapsed");
       if (!AppState.preferences) {
         AppState.preferences = {};
       }
-      AppState.preferences.sidebarCollapsed = document.body.classList.contains("sidebar-collapsed");
+      AppState.preferences.sidebarCollapsed = true;
+      saveState();
+    });
+  }
+
+  const desktopSidebarToggle = document.getElementById("desktop-sidebar-toggle-btn");
+  if (desktopSidebarToggle) {
+    desktopSidebarToggle.addEventListener("click", () => {
+      document.body.classList.remove("sidebar-collapsed");
+      if (!AppState.preferences) {
+        AppState.preferences = {};
+      }
+      AppState.preferences.sidebarCollapsed = false;
       saveState();
     });
   }

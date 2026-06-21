@@ -149,7 +149,41 @@ body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.clear-chat-btn {
+.chat-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 20px;
+  padding: 0 4px;
+}
+
+.chat-section-title {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  color: #94a3b8;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.clear-chat-link-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-family: var(--font-main);
+  font-size: 0.75rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.clear-chat-link-btn:hover {
+  color: var(--accent-pink);
+}
+
+.sidebar-toggle-btn-inner {
   margin-left: auto;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -164,11 +198,13 @@ body {
   transition: var(--transition-smooth);
 }
 
-.clear-chat-btn:hover {
-  background: rgba(255, 0, 110, 0.08);
-  border-color: rgba(255, 0, 110, 0.2);
-  color: var(--accent-pink);
+.sidebar-toggle-btn-inner:hover {
+  background: rgba(0, 243, 255, 0.08);
+  border-color: rgba(0, 243, 255, 0.25);
+  color: var(--accent-cyan);
 }
+
+
 
 
 /* Cybernetic Glowing Avatar */
@@ -268,7 +304,7 @@ body {
 .pa-chat-log {
   flex-grow: 1;
   overflow-y: auto;
-  margin: 20px 0;
+  margin: 12px 0 20px 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -341,6 +377,7 @@ body {
 /* Chat Input Bar */
 .pa-input-container {
   display: flex;
+  align-items: center;
   gap: 8px;
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--panel-border);
@@ -432,12 +469,16 @@ body {
   height: 44px;
   border-radius: var(--border-radius-md);
   cursor: pointer;
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   transition: var(--transition-smooth);
   flex-shrink: 0;
   margin-right: 12px;
+}
+
+body.sidebar-collapsed .desktop-sidebar-toggle-btn {
+  display: flex;
 }
 
 .desktop-sidebar-toggle-btn:hover {
@@ -1836,7 +1877,10 @@ body {
     display: flex;
   }
   .desktop-sidebar-toggle-btn {
-    display: none;
+    display: none !important;
+  }
+  .sidebar-toggle-btn-inner {
+    display: none !important;
   }
   .mobile-chat-fab {
     display: flex;
