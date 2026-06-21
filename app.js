@@ -265,6 +265,9 @@ function initFirebaseAuth() {
         return user.updateProfile({ displayName: name });
       })
       .then(() => {
+        // Save user profile details to Firestore
+        saveUserProfile(auth.currentUser);
+
         document.getElementById("signup-name").value = "";
         document.getElementById("signup-email").value = "";
         document.getElementById("signup-password").value = "";
@@ -302,6 +305,9 @@ function initFirebaseAuth() {
 
         // Hide login overlay
         authOverlay.classList.add("hidden");
+
+        // Save user profile details to Firestore
+        saveUserProfile(user);
 
         // Start Firestore real-time sync
         syncTasksFromFirestore(user.uid);
@@ -359,6 +365,28 @@ function friendlyAuthError(code) {
     "auth/account-exists-with-different-credential": "An account already exists with this email. Try signing in with your original method."
   };
   return messages[code] || "Something went wrong. Please try again.";
+}
+
+// --- Save User Profile to Firestore ---
+function saveUserProfile(user) {
+  if (!firebaseActive || !db || !user) return;
+
+  const userDocRef = db.collection("users").doc(user.uid);
+  const profileData = {
+    uid: user.uid,
+    displayName: user.displayName || user.email.split("@")[0] || "User",
+    email: user.email || "",
+    photoURL: user.photoURL || "",
+    lastActive: firebase.firestore.FieldValue.serverTimestamp()
+  };
+
+  userDocRef.set(profileData, { merge: true })
+    .then(() => {
+      console.log("User profile successfully saved to Firestore:", profileData);
+    })
+    .catch(err => {
+      console.error("Error saving user profile to Firestore:", err);
+    });
 }
 
 // --- Firestore Real-Time Sync ---
