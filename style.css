@@ -1777,6 +1777,8 @@ body {
     margin-left: 0;
     padding: 20px 16px;
     padding-bottom: 80px; /* Space for FAB */
+    width: 100%;
+    min-width: 0;
   }
 
   /* Show hamburger & FAB */
@@ -1892,7 +1894,13 @@ body {
   /* Calendar touch-friendly */
   .calendar-day-cell {
     font-size: 0.8rem;
-    min-height: 36px;
+    min-height: unset;
+  }
+  .calendar-grid {
+    gap: 4px;
+  }
+  .calendar-widget {
+    padding: 12px;
   }
 
   /* Carry forward banner stacks */
@@ -1929,7 +1937,7 @@ body {
 }
 
 /* Very small screens */
-@media (max-width: 420px) {
+@media (max-width: 550px) {
   .metrics-grid {
     grid-template-columns: 1fr;
   }
