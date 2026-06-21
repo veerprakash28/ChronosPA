@@ -268,6 +268,10 @@ function initFirebaseAuth() {
       dropName.textContent = "Guest User";
       dropEmail.textContent = "Please sign in to sync";
 
+      // Reset user state
+      AppState.preferences.username = "User";
+      saveState();
+
       // Show sign in, hide sign out
       if (signInBtn) signInBtn.classList.remove("hidden");
       if (signOutBtn) signOutBtn.classList.add("hidden");

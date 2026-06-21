@@ -333,6 +333,7 @@ body {
 
 .pa-input-container input {
   flex-grow: 1;
+  min-width: 0; /* Prevents text inputs from pushing layout bounds in flexbox */
   background: transparent;
   border: none;
   outline: none;
@@ -345,6 +346,13 @@ body {
 .pa-input-container input::placeholder {
   color: #64748b;
 }
+
+#pa-send-btn {
+  padding: 10px;
+  flex-shrink: 0;
+  aspect-ratio: 1;
+}
+
 
 /* ==========================================================================
    MAIN DASHBOARD WORKSPACE
