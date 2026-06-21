@@ -57,7 +57,8 @@ let AppState = {
   preferences: {
     username: "User",
     soundEnabled: true,
-    notificationPermission: null
+    notificationPermission: null,
+    notificationsMuted: false
   },
   currentCalendarMonth: new Date().getMonth(),
   currentCalendarYear: new Date().getFullYear(),
@@ -334,6 +335,10 @@ function syncTasksFromFirestore(uid) {
 // --- FCM Push Notification Token Registration ---
 async function initFcmMessaging(uid) {
   if (!fcmMessaging || !db) return;
+  if (AppState.preferences.notificationsMuted) {
+    console.log("FCM registration skipped: notifications are muted on this device.");
+    return;
+  }
   if (!firebaseConfig.vapidKey) {
     console.warn("No VAPID key in config — push notifications when browser is closed will not work.");
     return;
@@ -483,8 +488,47 @@ function requestNotificationPermission(silent = false) {
   }
 
   if (Notification.permission === "granted") {
-    btn.className = "status-btn permission-granted";
-    btnText.textContent = "Notifications Active";
+    if (!silent) {
+      AppState.preferences.notificationsMuted = !AppState.preferences.notificationsMuted;
+      saveState();
+
+      if (AppState.preferences.notificationsMuted) {
+        btn.className = "status-btn permission-denied";
+        btnText.textContent = "Notifications Muted";
+        addAssistantMessage("🔕 Notifications muted. You will not receive task alerts on this browser.");
+
+        // Clean FCM token from Firestore if online
+        if (fcmMessaging && currentUser && db) {
+          fcmMessaging.getToken()
+            .then(token => {
+              if (token) {
+                return db.collection("users").doc(currentUser.uid)
+                  .collection("fcm_tokens").doc(token).delete();
+              }
+            })
+            .then(() => console.log("FCM token removed due to mute."))
+            .catch(err => console.warn("Failed to remove FCM token on mute:", err));
+        }
+      } else {
+        btn.className = "status-btn permission-granted";
+        btnText.textContent = "Notifications Active";
+        addAssistantMessage("🔔 Notifications activated. You will receive task alerts.");
+
+        // Re-register FCM token if online
+        if (currentUser) {
+          initFcmMessaging(currentUser.uid);
+        }
+      }
+    } else {
+      // Load preference during boot
+      if (AppState.preferences.notificationsMuted) {
+        btn.className = "status-btn permission-denied";
+        btnText.textContent = "Notifications Muted";
+      } else {
+        btn.className = "status-btn permission-granted";
+        btnText.textContent = "Notifications Active";
+      }
+    }
     AppState.preferences.notificationPermission = "granted";
     saveState();
   } else if (Notification.permission === "denied") {
@@ -494,9 +538,14 @@ function requestNotificationPermission(silent = false) {
     if (!silent) {
       Notification.requestPermission().then(permission => {
         if (permission === "granted") {
+          AppState.preferences.notificationsMuted = false;
           btn.className = "status-btn permission-granted";
           btnText.textContent = "Notifications Active";
           playNotificationChime();
+          addAssistantMessage("🔔 Notifications activated. You will receive task alerts.");
+          if (currentUser) {
+            initFcmMessaging(currentUser.uid);
+          }
         } else {
           btn.className = "status-btn permission-denied";
           btnText.textContent = "Blocked";
@@ -536,6 +585,12 @@ function checkSchedulerAlerts(now) {
 
 // --- Trigger System-level & In-App Alerts ---
 function triggerReminder(task) {
+  if (AppState.preferences.notificationsMuted) {
+    addAssistantMessage(`⏰ ALERT (Muted): Time to do: "**${task.title}**".`, "alert-msg");
+    showInAppAlertModal(task);
+    return;
+  }
+
   playNotificationChime();
 
   if (Notification.permission === "granted") {
